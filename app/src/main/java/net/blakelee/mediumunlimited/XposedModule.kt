@@ -65,11 +65,16 @@ abstract class XposedModule(private val packageName: String) : IXposedHookLoadPa
         className: String,
         methodName: String,
         beforeHookedMethod: (XC_MethodHook.MethodHookParam) -> Unit = { _ -> },
-        afterHookedMethod: (XC_MethodHook.MethodHookParam) -> Unit = { _ -> }
+        afterHookedMethod: (XC_MethodHook.MethodHookParam) -> Unit = { _ -> },
+        vararg type: String
     ) {
+
         val type = XposedHelpers.findClass(className, classLoader)
             ?.declaredMethods
-            ?.first { it.name == methodName }
+            ?.filter { it.name == methodName }
+            ?.first {
+                XposedBridge.log("Found method: " + it.parameterTypes.joinToString { it.name })
+                it.parameterTypes.map { it.name }.containsAll(type.toList()) }
             ?.parameterTypes
 
         XposedHelpers.findAndHookMethod(
