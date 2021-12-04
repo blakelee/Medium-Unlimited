@@ -1,12 +1,11 @@
 package net.blakelee.mediumunlimited
 
-import de.robv.android.xposed.IXposedHookLoadPackage
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
+import de.robv.android.xposed.*
+import de.robv.android.xposed.callbacks.XC_InitPackageResources
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
-abstract class XposedModule(private val packageName: String) : IXposedHookLoadPackage {
+abstract class XposedModule(private val packageName: String) : IXposedHookLoadPackage,
+    IXposedHookInitPackageResources {
 
     lateinit var classLoader: ClassLoader
 
@@ -19,7 +18,15 @@ abstract class XposedModule(private val packageName: String) : IXposedHookLoadPa
         }
     }
 
+    override fun handleInitPackageResources(resparam: XC_InitPackageResources.InitPackageResourcesParam) {
+        if (resparam.packageName == packageName) {
+            onPackageResourcesLoaded(resparam)
+        }
+    }
+
     abstract fun onPackageLoaded()
+
+    open fun onPackageResourcesLoaded(resparam: XC_InitPackageResources.InitPackageResourcesParam) {}
 
     fun findClass(className: String) = XposedHelpers.findClass(className, classLoader)
 
@@ -74,7 +81,8 @@ abstract class XposedModule(private val packageName: String) : IXposedHookLoadPa
             ?.filter { it.name == methodName }
             ?.first {
                 XposedBridge.log("Found method: " + it.parameterTypes.joinToString { it.name })
-                it.parameterTypes.map { it.name }.containsAll(type.toList()) }
+                it.parameterTypes.map { it.name }.containsAll(type.toList())
+            }
             ?.parameterTypes
 
         XposedHelpers.findAndHookMethod(
@@ -92,6 +100,22 @@ abstract class XposedModule(private val packageName: String) : IXposedHookLoadPa
                 }
             }
         )
+    }
+
+    fun hookAllMethods(
+        className: String,
+        afterHookedMethod: (XC_MethodHook.MethodHookParam) -> Unit
+    ) {
+        val clazz = XposedHelpers.findClass(className, classLoader)
+        val methods = clazz.declaredMethods
+        methods.forEach {
+            findAndHookMethod(
+                className,
+                it.name,
+                afterHookedMethod = afterHookedMethod,
+                type = it.parameterTypes.map { it.name }.toTypedArray()
+            )
+        }
     }
 }
 

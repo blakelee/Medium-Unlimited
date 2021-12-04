@@ -2,9 +2,11 @@ package net.blakelee.mediumunlimited
 
 import android.annotation.SuppressLint
 import android.app.Fragment
+import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Spinner
+import androidx.core.view.children
 import de.robv.android.xposed.IXposedHookInitPackageResources
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
@@ -12,29 +14,38 @@ import de.robv.android.xposed.XposedBridge.hookAllConstructors
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_InitPackageResources
 import de.robv.android.xposed.callbacks.XC_LayoutInflated
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import de.robv.android.xposed.callbacks.XC_LoadPackage
+import io.rhprincess.xposed_ktx.XposedKTX
+import io.rhprincess.xposed_ktx.findViewById
 
+// adb connect localhost:21503
 class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResources {
 
     private val browse = "com.bhphoto.browse.Browse"
     private val productList = "com.bhphoto.model.products.ProductList"
     private val product = "com.bhphoto.model.products.Product"
     private val productsAdapter = "com.bhphoto.browse.a.i"
+    private val productDetails = "com.bhphoto.productdetails.activities.ProductDetailsActivity"
 
     private lateinit var fragment: Fragment
     private lateinit var drawerButton: View
     private lateinit var spinner: Spinner
     private lateinit var recycler: ViewGroup
     private lateinit var scrollView: ViewGroup
-    @Volatile private var resultCount = 0
-    @Volatile private var products: List<BHPhotoItem> = listOf()
+    private lateinit var decorView: ViewGroup
+    private lateinit var addToCart: View
+    private lateinit var paymentOption: View
+    private lateinit var googleLoginButton: View
+
+    @Volatile
+    private var resultCount = 0
+
+    @Volatile
+    private var products: List<BHPhotoItem> = listOf()
+
+    private lateinit var shop: View
 
     override fun onPackageLoaded() {
-        XposedBridge.log("bhphoto loaded")
-
         findAndHookMethod(
             browse,
             "b",
@@ -61,6 +72,12 @@ class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResourc
         setRecyclerView()
         setFragment()
 
+        hookAddToCartButton()
+
+        hookAllMethods(productDetails) {
+            XposedBridge.log(it.thisObject?.toString())
+        }
+
         val homeActivity =
             XposedHelpers.findClass("com.bhphoto.home.activities.HomeActivity", classLoader)
         homeActivity.methods.forEach {
@@ -80,6 +97,10 @@ class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResourc
                 }
             )
         }
+
+        findAndHookMethod(
+            browse,
+        )
     }
 
     @SuppressLint("ResourceType")
@@ -116,6 +137,42 @@ class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResourc
         )
     }
 
+    fun hookAddToCartButton() {
+        findAndHookMethod(
+            productDetails,
+            "J",
+            afterHookedMethod = {
+                val u = XposedHelpers.findField(
+                    XposedHelpers.findClass(productDetails, classLoader),
+                    "u"
+                )
+                    .get(it.thisObject) as View
+
+                val productDetails = XposedHelpers.getObjectField(it.thisObject, "i")
+                val isInCart = XposedHelpers.callMethod(productDetails, "isInCart") as Boolean
+                val preOrder = XposedHelpers.findField(
+                    XposedHelpers.findClass(
+                        "com.bhphoto.model.products.ProductDetails",
+                        classLoader
+                    ), "showPreOrder"
+                ).getBoolean(productDetails)
+
+                when {
+                    isInCart -> u.postDelayed({
+                        u.performClick()
+                    }, 500)
+                    preOrder -> {
+                    }
+                    else -> {
+                        u.postDelayed({
+                            u.performClick()
+                        }, 200)
+                    }
+                }
+            }
+        )
+    }
+
     fun getProductAdapterInitialItems() {
         hookAllConstructors(
             XposedHelpers.findClass(productsAdapter, classLoader),
@@ -124,11 +181,13 @@ class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResourc
 
                     products = (param.args[0] as List<Any>).map(::BHPhotoItem)
 
-                    val adapterClass = XposedHelpers.findClass("com.bhphoto.browse.a.i", classLoader)
+                    val adapterClass =
+                        XposedHelpers.findClass("com.bhphoto.browse.a.i", classLoader)
                     val adapter = adapterClass.cast(param.thisObject)
                     val categories = XposedHelpers.getObjectField(adapter, "b")
 
-                    scrollView = XposedHelpers.getObjectField(categories, "parentLayout") as ViewGroup
+                    scrollView =
+                        XposedHelpers.getObjectField(categories, "parentLayout") as ViewGroup
                     recycler = XposedHelpers.getObjectField(categories, "recyclerView") as ViewGroup
 
                     val productList = XposedHelpers.getObjectField(categories, "k")
@@ -152,7 +211,10 @@ class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResourc
         } else {
             XposedBridge.log("Got all results")
 //            clickItem(0)
-
+            val index: Int = products.indexOfFirst { it.available }
+            if (index != -1) {
+                clickItem(index)
+            }
             /**
              * Check for in stock items here
              *
@@ -162,7 +224,7 @@ class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResourc
     }
 
     @SuppressLint("ResourceType")
-    override fun handleInitPackageResources(resparam: XC_InitPackageResources.InitPackageResourcesParam) {
+    override fun onPackageResourcesLoaded(resparam: XC_InitPackageResources.InitPackageResourcesParam) {
         resparam.res?.hookLayout(
             resparam.packageName,
             "layout",
@@ -170,12 +232,31 @@ class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResourc
             object : XC_LayoutInflated() {
 
                 override fun handleLayoutInflated(liparam: LayoutInflatedParam) {
+                    val navigationParent = liparam.view.findViewById(2131362312) as ViewGroup
+                    navigationParent.post {
+                        val menuItems = navigationParent.children.toList()
+                        val clazz = XposedHelpers.findClass(
+                            "com.google.android.material.internal.NavigationMenuItemView",
+                            classLoader
+                        )
+                        val shop = menuItems.filter { it::class.java == clazz }.first {
+                            val menuItem = XposedHelpers.getObjectField(it, "i") as MenuItem
+                            menuItem.title.contains("Shop")
+                        }
+
+                        shop.post {
+                            shop.performClick()
+                        }
+                    }
+
+                    decorView = liparam.view.rootView as ViewGroup
                     drawerButton = liparam.view.findViewById(2131362335)
                     drawerButton.post {
                         drawerButton.performClick()
                     }
                 }
             })
+
 
         resparam.res.hookLayout(
             resparam.packageName,
@@ -184,7 +265,7 @@ class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResourc
             object : XC_LayoutInflated() {
                 override fun handleLayoutInflated(liparam: LayoutInflatedParam) {
                     spinner = liparam.view.findViewById(2131363445)
-                    spinner
+//                    fab = liparam.view.findViewById(2131362372)
                 }
             })
 
@@ -196,6 +277,59 @@ class BhPhotoModule : XposedModule("com.bhphoto"), IXposedHookInitPackageResourc
                 override fun handleLayoutInflated(liparam: LayoutInflatedParam) {
                     val s = liparam.view?.findViewById<Spinner?>(2131363445) ?: return
                     this@BhPhotoModule.spinner = s
+                }
+            })
+
+        resparam.res.hookLayout(
+            resparam.packageName,
+            "layout",
+            "activity_product_details",
+            object : XC_LayoutInflated() {
+                override fun handleLayoutInflated(liparam: LayoutInflatedParam) {
+                    addToCart = liparam.view.findViewById(2131361929)
+                    addToCart.post {
+                        addToCart.performClick()
+                    }
+                }
+            }
+        )
+
+        resparam.res.hookLayout(
+            resparam.packageName,
+            "layout",
+            "activity_cart",
+            object : XC_LayoutInflated() {
+                override fun handleLayoutInflated(liparam: LayoutInflatedParam) {
+                    paymentOption = liparam.view.findViewById(2131362473)
+                    paymentOption.postDelayed({
+                        paymentOption.performClick()
+                    }, 200)
+                }
+            })
+
+        resparam.res.hookLayout(
+            resparam.packageName,
+            "layout",
+            "fragment_login",
+            object : XC_LayoutInflated() {
+                override fun handleLayoutInflated(liparam: LayoutInflatedParam) {
+                    googleLoginButton = liparam.findViewById("login_google_button")
+                    googleLoginButton.postDelayed({
+                        googleLoginButton.performClick()
+                    }, 200)
+                }
+            })
+
+        resparam.res.hookLayout(
+            resparam.packageName,
+            "layout",
+            "checkout_fragment",
+            object : XC_LayoutInflated() {
+                override fun handleLayoutInflated(liparam: LayoutInflatedParam) {
+                    val payButton = liparam.findViewById("pay")
+                    payButton.postDelayed({
+//                        googleLoginButton.performClick()
+                    }, 200)
                 }
             })
     }
